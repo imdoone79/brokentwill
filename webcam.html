@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Break-Point Sequences — Final Build (Fixed)</title>
+  <!-- p5.js & Tone.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.2/p5.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+  <style>
+    :root{ --bg:#0a0a0a; --fg:#eaeaea; --muted:#9aa0a6; --accent:#9fd3ff; }
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:ui-sans-serif,system-ui,AppleSDGothicNeo,Segoe UI,Roboto,Pretendard,Arial,sans-serif}
+    .wrap{display:grid;grid-template-rows:auto 1fr auto;min-height:100vh}
+    header,footer{padding:12px 16px}
+    header{border-bottom:1px solid #1e1e1e;display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+    footer{border-top:1px solid #1e1e1e}
+    header h1{font-size:18px;margin:0}
+    header .sub{font-size:12px;color:var(--muted)}
+    main{position:relative;padding:16px}
+    /* Canvas card */
+    #cnv{position:relative;background:#0c0c0c;border-radius:12px;box-shadow:0 0 0 1px #1e1e1e inset;display:grid;place-items:center;overflow:hidden}
+    #cnv .inner{position:relative}
+    /* Drawer (hidden by default, reveals on right edge hover) */
+    .drawer{position:fixed;top:0;right:0;height:100vh;width:360px;background:#111;border-left:1px solid #1f1f1f;box-shadow:-8px 0 20px rgba(0,0,0,.35);transform:translateX(100%);transition:transform .22s ease;display:flex;flex-direction:column;gap:14px;padding:14px;z-index:30}
+    .drawer.open{transform:translateX(0%)}
+    .drawer .card{padding:12px;border:1px solid #1f1f1f;border-radius:12px;background:#131313}
+    .drawer .row{display:flex;align-items:center;gap:8px}
+    .drawer .row label{flex:0 0 130px;font-size:12px;color:var(--muted)}
+    .drawer .row input[type="range"]{flex:1}
+    .kpis{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+    .pill{padding:6px 8px;border-radius:999px;background:#151515;border:1px solid #222}
+    .btn{appearance:none;border:1px solid #2a2a2a;background:#141414;color:var(--fg);padding:8px 10px;border-radius:10px;cursor:pointer}
+    .btn[aria-pressed="true"]{outline:2px solid var(--accent)}
+    .note{font-size:12px;color:var(--muted)}
+    /* Edge strip to reveal */
+    .reveal-strip{position:fixed;top:0;right:0;width:12px;height:100vh;z-index:31;cursor:ew-resize}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Break-Point Sequences — Final</h1>
+      <div class="sub">16:9 fixed • right-edge drawer • 50% rounded pieces • webcam input (no preview) • always-on beeps after first interaction</div>
+    </header>
+    <main>
+      <div class="card" id="cnv">
+        <div class="inner"></div>
+      </div>
+    </main>
+    <footer>
+      <span class="note">Tip: 카메라는 HTTPS나 localhost에서만 동작. 첫 클릭/키 입력 후 사운드 시작.</span>
+    </footer>
+  </div>
+
+  <!-- Hidden drawer -->
+  <div class="drawer" id="drawer">
+    <div class="card">
+      <div class="row"><label>안정 ↔ 불안정</label><input id="sEmotion" type="range" min="0" max="1" step="0.001" value="0.30"></div>
+      <div class="row"><label>규율 ↔ 균열</label><input id="sOrderBreak" type="range" min="0" max="1" step="0.001" value="0.35"></div>
+      <div class="row"><label>참조 가중치</label><input id="sRef" type="range" min="0" max="1" step="0.001" value="0.20"></div>
+      <div class="row"><label>루프 길이(초)</label><input id="sLoop" type="range" min="6" max="12" step="0.5" value="8"></div>
+      <div class="row"><label>입력 모드</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button id="btnSlider" class="btn" aria-pressed="true">슬라이더</button>
+          <button id="btnMouse" class="btn" aria-pressed="false">마우스·스크롤</button>
+          <button id="btnCam" class="btn" aria-pressed="false">웹캠</button>
+        </div>
+      </div>
+      <div class="row"><label>사운드</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button id="btnSound" class="btn" aria-pressed="true" disabled>사운드 켜짐(항상)</button>
+          <small class="note">첫 클릭/키 입력 시 자동 초기화</small>
+        </div>
+      </div>
+      <div class="note">입력은 가시화 레이어만 변경합니다. 본체 규칙은 고정.</div>
+    </div>
+    <div class="card">
+      <div class="kpis">
+        <div class="pill">안정 <span id="kCalm">0.70</span></div>
+        <div class="pill">균열 <span id="kBreak">0.35</span></div>
+        <div class="pill">참조 <span id="kRef">0.20</span></div>
+        <div class="pill">루프 <span id="kLoop">8.0s</span></div>
+        <div class="pill" id="kInput">Input: slider</div>
+        <div class="pill" id="kCamState" style="display:inline-block">Cam: idle</div>
+        <div class="pill" id="kAudio">Audio: pending</div>
+      </div>
+    </div>
+  </div>
+  <!-- SINGLE reveal-strip (duplicate removed) -->
+  <div class="reveal-strip" id="reveal"></div>
+
+<script>
+// ===== State =====
+let gfx, t0, loopDur=8, W=960, H=540;
+let emotion=0.30, orderBreak=0.35, refWeight=0.20;
+let inputMode='slider';
+let capture=null, prevFrame=null, camReady=false;
+let lastMouseX=null, lastMouseY=null, lastMoveT=0; let motionAccum=0;
+// audio
+let beepSynth, beepVol; let lastBeepMs=0; let audioInit=false;
+// webcam color info
+let camColor = { hAvg:210, sAvg:0.0, vAvg:0.0 };
+
+function setup(){
+  const mount = document.querySelector('#cnv .inner');
+  computeCanvasSize();
+  const cnv = createCanvas(W, H); cnv.parent(mount);
+  gfx = createGraphics(W, H);
+  t0 = millis(); pixelDensity(1); noSmooth();
+  hookUI(); hookMouseInputs(); hookDrawer(); hookAudioInit();
+}
+function windowResized(){ computeCanvasSize(); resizeCanvas(W, H); gfx = createGraphics(W, H); }
+function computeCanvasSize(){
+  // keep 16:9 inside available area
+  const pad = 32;
+  const main = document.querySelector('main');
+  const availW = Math.max(320, main.clientWidth - pad);
+  const availH = Math.max(240, window.innerHeight - document.querySelector('header').clientHeight - document.querySelector('footer').clientHeight - pad*2);
+  const targetW = Math.min(availW, Math.floor(availH * (16/9)));
+  const useW = targetW;
+  const useH = Math.floor(useW * 9/16);
+  W = useW; H = useH;
+  const cnvCard = document.getElementById('cnv');
+  cnvCard.style.height = (H+24)+"px";
+}
+
+function hookDrawer(){
+  const drawer = document.getElementById('drawer');
+  const strip = document.getElementById('reveal');
+  let hideTimer=null;
+  const open = ()=> drawer.classList.add('open');
+  const close = ()=> drawer.classList.remove('open');
+  strip.addEventListener('mouseenter', open);
+  strip.addEventListener('mousemove', open);
+  drawer.addEventListener('mouseleave', ()=>{ hideTimer && clearTimeout(hideTimer); hideTimer=setTimeout(close, 600); });
+  window.addEventListener('keydown', (e)=>{ if(e.key==='Escape') close(); });
+}
+function hookAudioInit(){
+  async function initAudioOnce(){
+    if(audioInit) return;
+    try{ await Tone.start(); setupAudioGraph(); audioInit=true; document.getElementById('kAudio').textContent='Audio: on'; }
+    catch(e){ console.warn('audio init error', e); }
+  }
+  window.addEventListener('pointerdown', initAudioOnce, {once:true});
+  window.addEventListener('keydown', initAudioOnce, {once:true});
+}
+
+function hookUI(){
+  const sE=el('sEmotion'), sOB=el('sOrderBreak'), sR=el('sRef'), sL=el('sLoop');
+  const bSlider=el('btnSlider'), bMouse=el('btnMouse'), bCam=el('btnCam');
+  const kInput=el('kInput'), kCam=el('kCamState');
+  const upd=()=>{ emotion=+sE.value; orderBreak=+sOB.value; refWeight=+sR.value; loopDur=+sL.value;
+    el('kCalm').textContent=(1-emotion).toFixed(2); el('kBreak').textContent=orderBreak.toFixed(2);
+    el('kRef').textContent=refWeight.toFixed(2); el('kLoop').textContent=loopDur.toFixed(1)+"s"; };
+  sE.oninput=sOB.oninput=sR.oninput=sL.oninput=upd; upd();
+  bSlider.onclick=()=>{ inputMode='slider'; kInput.textContent='Input: slider'; press(bSlider,true); press(bMouse,false); press(bCam,false); stopCamera(); kCam.textContent='Cam: off'; };
+  bMouse.onclick=()=>{ inputMode='mouse'; kInput.textContent='Input: mouse/scroll'; press(bSlider,false); press(bMouse,true); press(bCam,false); stopCamera(); kCam.textContent='Cam: off'; };
+  bCam.onclick=async()=>{
+    inputMode='cam'; kInput.textContent='Input: camera'; press(bSlider,false); press(bMouse,false); press(bCam,true);
+    kCam.textContent='Cam: requesting… (HTTPS 필요)';
+    try{ await startCamera(); kCam.textContent='Cam: ready'; } catch(e){ console.warn('camera error', e);
+      kCam.textContent='Cam: blocked/error'; inputMode='slider'; press(bSlider,true); press(bCam,false); kInput.textContent='Input: slider'; }
+  };
+}
+function press(btn, on){ btn.setAttribute('aria-pressed', on? 'true':'false'); }
+function el(id){ return document.getElementById(id); }
+
+function hookMouseInputs(){
+  window.addEventListener('mousemove', (e)=>{
+    const now=performance.now(); if(lastMouseX===null){ lastMouseX=e.clientX; lastMouseY=e.clientY; lastMoveT=now; return; }
+    const dx=e.clientX-lastMouseX, dy=e.clientY-lastMouseY; const dt=Math.max(1, now-lastMoveT);
+    const v=Math.sqrt(dx*dx+dy*dy)/dt; motionAccum += v*8.4; lastMouseX=e.clientX; lastMouseY=e.clientY; lastMoveT=now;
+  }, {passive:true});
+  window.addEventListener('wheel', (e)=>{ motionAccum += Math.min(3, Math.abs(e.deltaY)/160); }, {passive:true});
+}
+
+// ===== Audio Graph =====
+function setupAudioGraph(){
+  beepVol = new Tone.Volume(-10).toDestination();
+  beepSynth = new Tone.Synth({
+    oscillator: { type: 'sine' },
+    envelope: { attack: 0.002, decay: 0.08, sustain: 0, release: 0.05 }
+  }).connect(beepVol);
+}
+function updateAudio(breakRatio, E){
+  const nowMs = millis();
+  const interval = lerp(700, 90, constrain(breakRatio*0.85 + E*0.3, 0, 1));
+  if(nowMs - lastBeepMs > interval){
+    lastBeepMs = nowMs; if(!beepSynth) return;
+    const low=[196,220,247,262,294,330], high=[784,880,988,1047,1175,1319];
+    const mix=constrain(breakRatio*0.8 + E*0.3,0,1); const bank=(mix<0.5)?low:high;
+    const idx=Math.floor(map(mix,0,1,0,bank.length-1)); const freq=bank[idx];
+    const dur=0.06+0.08*mix; beepSynth.triggerAttackRelease(freq, dur);
+  }
+}
+
+// ===== Camera =====
+function stopCamera(){
+  if(capture && capture.elt && capture.elt.srcObject){
+    const tracks=capture.elt.srcObject.getTracks();
+    tracks.forEach(t=>t.stop());
+  }
+  if (capture && capture.remove) { try { capture.remove(); } catch (e) {} }
+  capture=null; prevFrame=null; camReady=false;
+}
+async function startCamera(){
+  return new Promise((resolve,reject)=>{
+    try{
+      capture=createCapture({video:{facingMode:'user'}, audio:false}, ()=>{});
+      capture.elt.setAttribute('playsinline',''); capture.elt.muted=true; capture.size(160,120); capture.hide();
+      const readyCheck=setInterval(()=>{
+        if(camHasData()){ camReady=true; prevFrame=createImage(160,120); clearInterval(readyCheck); resolve(); }
+      },100);
+      setTimeout(()=>{ if(!camHasData()) { clearInterval(readyCheck); reject(new Error('no camera data')); } },8000);
+    }catch(err){ reject(err); }
+  });
+}
+function camHasData(){
+  return capture && capture.elt && capture.elt.srcObject && capture.elt.readyState >= 2 && capture.width>0 && capture.height>0;
+}
+
+// ===== Draw Loop =====
+function draw(){
+  background(12);
+  // input → emotion
+  if(inputMode==='cam' && camReady && camHasData()){
+    let E = senseMotionCamera(); E *= 0.85; emotion = 0.65*E + 0.35*emotion; el('sEmotion').value = emotion.toFixed(3); el('kCalm').textContent=(1-emotion).toFixed(2);
+    if(frameCount % 6 === 0){ updateCamColor(); }
+  } else if(inputMode==='mouse'){
+    motionAccum *= 0.88; let E = map(constrain(motionAccum,0,7), 0, 7, 0, 1); E *= 0.7; emotion = 0.6*E + 0.4*emotion; el('sEmotion').value = emotion.toFixed(3); el('kCalm').textContent=(1-emotion).toFixed(2);
+  }
+  const flipPeriod = lerp(24, 6, emotion);
+  const breakIntensity = lerp(0.08, 0.6, Math.max(emotion, orderBreak));
+  const jitterSigma = lerp(0.0, 1.5, emotion);
+
+  // color mapping calm→blue, fast→red; slight blend with cam hue
+  const hueEmotion = lerp(210, 8, constrain(emotion,0,1));
+  const hueBlend = mixAngles(hueEmotion, camColor.hAvg || hueEmotion, 0.25 * (camColor.sAvg||0));
+  const baseHueA = hueBlend; const baseHueB = (baseHueA+180)%360;
+  const sat = lerp(16, 72, emotion*0.9 + refWeight*0.2) * (0.85 + 0.3*(camColor.sAvg||0));
+  const brt = lerp(88, 96, 1-emotion*0.6);
+
+  gfx.push(); gfx.colorMode(HSL,360,100,100,1); gfx.clear();
+  const cell = 14; const cols = Math.ceil(W/cell)+2; const rows = Math.ceil(H/cell)+2; const tStep = 1;
+  let breakCount=0, totalCount=0;
+  for(let r=0;r<rows;r++){
+    const dir = (Math.floor(r/Math.max(1,Math.round(flipPeriod)))%2===0)? 1 : -1;
+    for(let c=0;c<cols;c++){
+      const idx = mod((c + dir*(r*tStep)), 4); const warpOnTop = (idx<2);
+      const brkSeed = noise(c*0.07, r*0.07, millis()*0.0006);
+      const doBreak = brkSeed < breakIntensity*0.6; totalCount++; if(doBreak) breakCount++;
+      const jx = (randomGaussian()*jitterSigma); const jy = (randomGaussian()*jitterSigma);
+      const x = c*cell + jx; const y = r*cell + jy;
+
+      // cell colors
+      const hueJitter = (noise(c*0.11, r*0.13, ((camColor.hAvg||0)/360)) - 0.5) * 20;
+      const hBase = warpOnTop? baseHueA: baseHueB; const h = (hBase + hueJitter + 360) % 360;
+      const s = sat*(warpOnTop?1.0:0.9); const l = brt*(warpOnTop?0.95:0.86);
+
+      if(!doBreak){
+        const w = warpOnTop? cell*0.9 : cell; const hgt = warpOnTop? cell : cell*0.9; const orient = warpOnTop? 'h' : 'v';
+        gradRectRoundLinear(gfx, x, y, w, hgt, Math.min(w,hgt)*0.24, h, s, l, 0.92, orient);
+      } else {
+        gfx.noFill(); gfx.stroke(h, s*0.75, l*0.9, 0.30); gfx.strokeWeight(1);
+        gfx.rect(x+2, y+2, cell-4, cell-4, (cell-4)*0.24);
+        gradRectRoundLinear(gfx, x+3, y+3, cell-6, cell-6, (cell-6)*0.24, h, s*0.6, l*0.95, 0.18, 'rad');
+      }
+    }
+  }
+  gfx.pop();
+  image(gfx, (width-W)/2, (height-H)/2, W, H);
+
+  const breakRatio = totalCount>0 ? breakCount/totalCount : 0;
+  if(audioInit){ updateAudio(breakRatio, emotion); }
+
+  push(); fill(200); textSize(12); textAlign(RIGHT,BOTTOM);
+  const status = `안정 ${(1-emotion).toFixed(2)}  •  균열 ${orderBreak.toFixed(2)}  •  참조 ${refWeight.toFixed(2)}  •  Audio ${(audioInit?'on':'pending')}`;
+  text(status, width-10, height-8); pop();
+}
+
+// fast rounded linear gradient (native canvas gradient + roundRect)
+function gradRectRoundLinear(g, x, y, w, h, r, hue, sat, lig, alpha, mode='h'){
+  const ctx = g.drawingContext;
+  const gx0 = x, gy0 = y;
+  const gx1 = (mode==='h')? x+w : x;
+  const gy1 = (mode==='h')? y : y+h;
+  const grad = ctx.createLinearGradient(gx0, gy0, gx1, gy1);
+  const c0 = hslToRgba(hue, sat, lig, alpha);
+  const c1 = hslToRgba(hue, sat, lig*0.88, alpha*0.25);
+  grad.addColorStop(0, c0); grad.addColorStop(1, c1);
+  ctx.save(); ctx.beginPath();
+  if(typeof ctx.roundRect==='function'){ ctx.roundRect(x, y, w, h, r); }
+  else { const rr=Math.max(0, Math.min(r, Math.min(w,h)/2));
+    ctx.moveTo(x+rr,y); ctx.lineTo(x+w-rr,y); ctx.arc(x+w-rr,y+rr,rr,-Math.PI/2,0);
+    ctx.lineTo(x+w,y+h-rr); ctx.arc(x+w-rr,y+h-rr,rr,0,Math.PI/2);
+    ctx.lineTo(x+rr,y+h); ctx.arc(x+rr,y+h-rr,rr,Math.PI/2,Math.PI);
+    ctx.lineTo(x,y+rr); ctx.arc(x+rr,y+rr,rr,Math.PI,1.5*Math.PI); }
+  ctx.fillStyle = grad; ctx.fill(); ctx.restore();
+}
+function hslToRgba(h,s,l,a){
+  s/=100; l/=100; const C=(1-Math.abs(2*l-1))*s; const hh=(h/60)%6; const X=C*(1-Math.abs(hh%2-1)); let r=0,g=0,b=0;
+  if(0<=hh&&hh<1){r=C;g=X;} else if(1<=hh&&hh<2){r=X;g=C;} else if(2<=hh&&hh<3){g=C;b=X;}
+  else if(3<=hh&&hh<4){g=X;b=C;} else if(4<=hh&&hh<5){r=X;b=C;} else {r=C;b=X;}
+  const m=l-C/2; r=Math.round((r+m)*255); g=Math.round((g+m)*255); b=Math.round((b+m)*255);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+function mod(a,m){let r=a%m; return r<0?r+m:r;}
+
+function senseMotionCamera(){
+  if(!capture || !camHasData()) return 0.0; capture.loadPixels(); if(capture.pixels.length===0) return 0.0;
+  if(!prevFrame || prevFrame.width!==capture.width || prevFrame.pixels.length===0){
+    prevFrame=createImage(capture.width,capture.height);
+    prevFrame.copy(capture,0,0,capture.width,capture.height,0,0,prevFrame.width,prevFrame.height);
+    prevFrame.loadPixels(); return 0.0;
+  }
+  prevFrame.loadPixels(); let sum=0, cnt=0;
+  for(let i=0;i<capture.pixels.length;i+=16){
+    const d=Math.abs(capture.pixels[i]-prevFrame.pixels[i]) + Math.abs(capture.pixels[i+1]-prevFrame.pixels[i+1]) + Math.abs(capture.pixels[i+2]-prevFrame.pixels[i+2]);
+    sum+=d; cnt++;
+  }
+  prevFrame.copy(capture,0,0,capture.width,capture.height,0,0,prevFrame.width,prevFrame.height);
+  prevFrame.updatePixels();
+  const avg = sum/(cnt*255*3); const low=0.05, high=0.20; return constrain((avg-low)/(high-low), 0, 1);
+}
+
+function updateCamColor(){
+  if(!capture || !camHasData()) return; capture.loadPixels(); if(capture.pixels.length===0) return;
+  let sumH=0, sumS=0, sumV=0, n=0; const step = 4*4;
+  for(let i=0;i<capture.pixels.length;i+=4*step){
+    const r=capture.pixels[i]/255, g=capture.pixels[i+1]/255, b=capture.pixels[i+2]/255;
+    const hsv=rgb2hsv(r,g,b); const H=hsv[0]*360, S=hsv[1], V=hsv[2];
+    if(V<0.2 || S<0.15) continue; sumH+=H; sumS+=S; sumV+=V; n++;
+  }
+  if(n>0){ camColor.hAvg=(sumH/n+360)%360; camColor.sAvg=sumS/n; camColor.vAvg=sumV/n; }
+}
+function rgb2hsv(r,g,b){ const max=Math.max(r,g,b), min=Math.min(r,g,b); const d=max-min; let h=0;
+  if(d!==0){ switch(max){ case r: h=((g-b)/d)%6; break; case g: h=(b-r)/d+2; break; case b: h=(r-g)/d+4; break; } h/=6; if(h<0) h+=1; }
+  const s=max===0?0:d/max; const v=max; return [h,s,v];
+}
+function mixAngles(a,b,t){ const da=((((b-a)%360)+540)%360)-180; return (a+da*t+360)%360; }
+</script>
+</body>
+</html>
