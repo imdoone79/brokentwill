@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>[주연 작가 개인전] Break‑Point Sequences — Prototype</title>
+  <!-- p5.js CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.2/p5.min.js"></script>
+  <!-- Tone.js for sound cues -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+  <style>
+    :root{ --bg:#0a0a0a; --fg:#eaeaea; --muted:#9aa0a6; --accent:#9fd3ff; }
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:ui-sans-serif,system-ui,AppleSDGothicNeo,Segoe UI,Roboto,Pretendard,Arial,sans-serif}
+    .wrap{display:grid;grid-template-rows:auto 1fr auto;min-height:100vh}
+    header,footer{padding:12px 16px;border-bottom:1px solid #1e1e1e}
+    header{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+    header h1{font-size:18px;margin:0}
+    header .sub{font-size:12px;color:var(--muted)}
+    main{display:grid;grid-template-columns:1fr 380px;gap:16px;padding:16px}
+    #cnv{background:#0c0c0c;border-radius:12px;box-shadow:0 0 0 1px #1e1e1e inset}
+    .panel{display:flex;flex-direction:column;gap:14px}
+    .card{padding:12px;border:1px solid #1f1f1f;border-radius:12px;background:#111}
+    .row{display:flex;align-items:center;gap:8px}
+    .row label{flex:0 0 130px;font-size:12px;color:var(--muted)}
+    .row input[type="range"]{flex:1}
+    .kpis{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+    .pill{padding:6px 8px;border-radius:999px;background:#151515;border:1px solid #222}
+    .btn{appearance:none;border:1px solid #2a2a2a;background:#141414;color:var(--fg);padding:8px 10px;border-radius:10px;cursor:pointer}
+    .btn[aria-pressed="true"]{outline:2px solid var(--accent)}
+    .note{font-size:12px;color:var(--muted)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>[주연 작가 개인전] 균열의 능직 — Break‑Point Sequences</h1>
+      <div class="sub">in dialogue with A, B <span style="opacity:.6">(보조 표기만, 본작 불변)</span></div>
+    </header>
+    <main>
+      <div class="card" id="cnv"><!-- p5 canvas mounts here --></div>
+      <aside class="panel">
+        <div class="card">
+          <div class="row"><label>안정 ↔ 불안정</label><input id="sEmotion" type="range" min="0" max="1" step="0.001" value="0.30"></div>
+          <div class="row"><label>규율 ↔ 균열</label><input id="sOrderBreak" type="range" min="0" max="1" step="0.001" value="0.35"></div>
+          <div class="row"><label>참조 가중치</label><input id="sRef" type="range" min="0" max="1" step="0.001" value="0.20"></div>
+          <div class="row"><label>루프 길이(초)</label><input id="sLoop" type="range" min="6" max="12" step="0.5" value="8"></div>
+          <div class="row"><label>입력 모드</label>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button id="btnSlider" class="btn" aria-pressed="true">슬라이더</button>
+              <button id="btnMouse" class="btn" aria-pressed="false">마우스·스크롤</button>
+              <button id="btnCam" class="btn" aria-pressed="false">웹캠</button>
+            </div>
+          </div>
+          <div class="row"><label>사운드</label>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button id="btnSound" class="btn" aria-pressed="false">사운드 꺼짐</button>
+              <small class="note">(첫 클릭 시 오디오 권한 필요)</small>
+            </div>
+          </div>
+          <div class="note">관객 입력은 가시화 레이어(색/속도/노이즈/브레이크 빈도)만 바꿉니다. 작품 본체는 불변.</div>
+        </div>
+        <div class="card">
+          <div class="kpis">
+            <div class="pill">안정 <span id="kCalm">0.70</span></div>
+            <div class="pill">균열 <span id="kBreak">0.35</span></div>
+            <div class="pill">참조 <span id="kRef">0.20</span></div>
+            <div class="pill">루프 <span id="kLoop">8.0s</span></div>
+            <div class="pill" id="kInput">Input: slider</div>
+            <div class="pill" id="kCamState" style="display:inline-block">Cam: idle</div>
+            <div class="pill" id="kAudio">Audio: off</div>
+          </div>
+        </div>
+        <div class="card note">
+          보호 원칙: 상단 타이틀은 단수형(개인전), 참조는 보조 표기. 화면 점유 ≥70%는 본작, 참조는 미니뷰/별도 루프. 크레딧과 출처는 캡션/QR로 즉시 접근.
+        </div>
+      </aside>
+    </main>
+    <footer>
+      <span class="note">© 주연작가 — 전시 알고리즘: (저자성 규칙)×(참조 가중치)×(관객 입력)×(가시화 규약)</span>
+    </footer>
+  </div>
+
+<script>
+let gfx, t0, loopDur=8, W=960, H=540; // canvas size inside card
+let emotion=0.30, orderBreak=0.35, refWeight=0.20;
+let inputMode='slider'; // 'slider' | 'mouse' | 'cam'
+let useCam=false, capture=null, prevFrame=null, camReady=false;
+// mouse/scroll speed metric
+let lastMouseX=null, lastMouseY=null, lastMoveT=0; 
+let motionAccum=0; // accumulative magnitude
+
+// sound
+let soundOn=false, synthClick, shuttleNoise, shuttleFilter, shuttleVol;
+let lastClickMs=0;
+
+function setup(){
+  const mount = document.getElementById('cnv');
+  W = mount.clientWidth - 24; H = Math.max(280, window.innerHeight*0.58);
+  const cnv = createCanvas(W, H); cnv.parent('cnv');
+  gfx = createGraphics(W, H);
+  t0 = millis(); pixelDensity(1); noSmooth();
+  hookUI(); hookMouseInputs();
+}
+
+function windowResized(){
+  const mount = document.getElementById('cnv');
+  W = mount.clientWidth - 24; H = Math.max(280, window.innerHeight*0.58);
+  resizeCanvas(W, H); gfx = createGraphics(W, H);
+}
+
+function hookUI(){
+  const sE=document.getElementById('sEmotion');
+  const sOB=document.getElementById('sOrderBreak');
+  const sR=document.getElementById('sRef');
+  const sL=document.getElementById('sLoop');
+  const bSlider=document.getElementById('btnSlider');
+  const bMouse=document.getElementById('btnMouse');
+  const bCam=document.getElementById('btnCam');
+  const bSound=document.getElementById('btnSound');
+  const kInput=document.getElementById('kInput');
+  const kCam=document.getElementById('kCamState');
+  const kAudio=document.getElementById('kAudio');
+
+  const upd=()=>{
+    emotion=parseFloat(sE.value); orderBreak=parseFloat(sOB.value);
+    refWeight=parseFloat(sR.value); loopDur=parseFloat(sL.value);
+    document.getElementById('kCalm').textContent=(1-emotion).toFixed(2);
+    document.getElementById('kBreak').textContent=orderBreak.toFixed(2);
+    document.getElementById('kRef').textContent=refWeight.toFixed(2);
+    document.getElementById('kLoop').textContent=loopDur.toFixed(1)+"s";
+  }; sE.oninput=sOB.oninput=sR.oninput=sL.oninput=upd; upd();
+
+  bSlider.onclick=()=>{
+    inputMode='slider'; kInput.textContent='Input: slider';
+    bSlider.setAttribute('aria-pressed','true');
+    bMouse.setAttribute('aria-pressed','false');
+    bCam.setAttribute('aria-pressed','false');
+    stopCamera(); kCam.textContent='Cam: off';
+  };
+
+  bMouse.onclick=()=>{
+    inputMode='mouse'; kInput.textContent='Input: mouse/scroll';
+    bSlider.setAttribute('aria-pressed','false');
+    bMouse.setAttribute('aria-pressed','true');
+    bCam.setAttribute('aria-pressed','false');
+    stopCamera(); kCam.textContent='Cam: off';
+  };
+
+  bCam.onclick=async()=>{
+    inputMode='cam'; kInput.textContent='Input: camera';
+    bSlider.setAttribute('aria-pressed','false');
+    bMouse.setAttribute('aria-pressed','false');
+    bCam.setAttribute('aria-pressed','true');
+    kCam.textContent='Cam: requesting… (HTTPS 필요)';
+    try{ await startCamera(); kCam.textContent='Cam: ready'; }
+    catch(e){ console.warn('camera error', e); kCam.textContent='Cam: blocked/error'; inputMode='slider'; bSlider.setAttribute('aria-pressed','true'); bCam.setAttribute('aria-pressed','false'); kInput.textContent='Input: slider'; }
+  };
+
+  bSound.onclick=async()=>{
+    try{
+      if(!soundOn){
+        await Tone.start();
+        setupAudioGraph();
+        soundOn=true; bSound.setAttribute('aria-pressed','true'); bSound.textContent='사운드 켜짐'; kAudio.textContent='Audio: on';
+      }else{
+        teardownAudio();
+        soundOn=false; bSound.setAttribute('aria-pressed','false'); bSound.textContent='사운드 꺼짐'; kAudio.textContent='Audio: off';
+      }
+    }catch(e){ console.warn('audio error', e); }
+  };
+}
+
+function setupAudioGraph(){
+  synthClick = new Tone.NoiseSynth({ noise: { type: 'white' }, envelope: { attack: 0.001, decay: 0.06, sustain: 0 } }).toDestination();
+  shuttleFilter = new Tone.Filter(1200, 'lowpass');
+  shuttleVol = new Tone.Volume(-Infinity);
+  shuttleNoise = new Tone.Noise('pink').connect(shuttleFilter).connect(shuttleVol).toDestination();
+  shuttleNoise.start();
+}
+function teardownAudio(){ if(shuttleNoise){ shuttleNoise.stop(); shuttleNoise.dispose(); } if(shuttleFilter){ shuttleFilter.dispose(); } if(shuttleVol){ shuttleVol.dispose(); } if(synthClick){ synthClick.dispose(); } shuttleNoise=shuttleFilter=shuttleVol=synthClick=null; }
+
+function hookMouseInputs(){
+  window.addEventListener('mousemove', (e)=>{
+    const now=performance.now();
+    if(lastMouseX===null){ lastMouseX=e.clientX; lastMouseY=e.clientY; lastMoveT=now; return; }
+    const dx=e.clientX-lastMouseX, dy=e.clientY-lastMouseY;
+    const dt=Math.max(1, now-lastMoveT);
+    const v=Math.sqrt(dx*dx+dy*dy)/(dt);
+    motionAccum += v*8.4; // ↓ 약 30% 민감도 축소(기존 12)
+    lastMouseX=e.clientX; lastMouseY=e.clientY; lastMoveT=now;
+  }, {passive:true});
+  window.addEventListener('wheel', (e)=>{ motionAccum += Math.min(3, Math.abs(e.deltaY)/160); }, {passive:true}); // 휠 민감도 완화
+}
+
+function stopCamera(){ if(capture && capture.elt && capture.elt.srcObject){ const tracks = capture.elt.srcObject.getTracks(); tracks.forEach(t=>t.stop()); } useCam=false; capture=null; prevFrame=null; camReady=false; }
+
+async function startCamera(){
+  return new Promise((resolve,reject)=>{
+    try{
+      capture = createCapture({video:{facingMode:'user'}, audio:false}, ()=>{});
+      capture.elt.setAttribute('playsinline',''); capture.elt.muted = true;
+      capture.size(160,120); capture.hide();
+      const readyCheck = setInterval(()=>{ if(camHasData()){ camReady=true; prevFrame=createImage(160,120); clearInterval(readyCheck); resolve(); } }, 100);
+      setTimeout(()=>{ if(!camHasData()) reject(new Error('no camera data')); }, 8000);
+    }catch(err){ reject(err); }
+  });
+}
+
+function camHasData(){ return capture && capture.elt && typeof capture.elt.readyState==='number' && capture.elt.readyState>=2 && capture.width>0; }
+function easeInOutCubic(x){return x<0.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2}
+
+function draw(){
+  background(12);
+
+  // derive emotion by input mode (웹캠 반응 ↑ 소폭 상향)
+  if(inputMode==='cam' && camReady && camHasData()){
+    let E = senseMotionCamera();
+    E *= 0.85; // 0.7 → 0.85
+    emotion = 0.65*E + 0.35*emotion; // 반응성 소폭 상향
+    document.getElementById('sEmotion').value = emotion.toFixed(3);
+    document.getElementById('kCalm').textContent=(1-emotion).toFixed(2);
+  }
+  else if(inputMode==='mouse'){
+    motionAccum *= 0.88; // 느린 감쇠
+    let E = map(constrain(motionAccum,0,7), 0, 7, 0, 1);
+    E *= 0.7; // 30% 줄이기 유지
+    emotion = 0.6*E + 0.4*emotion;
+    document.getElementById('sEmotion').value = emotion.toFixed(3);
+    document.getElementById('kCalm').textContent=(1-emotion).toFixed(2);
+  }
+
+  const t = ((millis()-t0)/1000) % loopDur; // seconds into loop
+  const nrm = t/loopDur; // 0..1
+  const temporalEase = (emotion<0.5)? easeInOutCubic(nrm) : nrm; // 안정: 이징, 불안: 선형
+
+  // parameter mapping (색: 느리면 푸른계열, 빠르면 붉은계열)
+  const flipPeriod = lerp(24, 6, emotion);
+  const breakIntensity = lerp(0.08, 0.6, Math.max(emotion, orderBreak));
+  const jitterSigma = lerp(0.0, 1.5, emotion);
+  // calm(0)→blue(210°), fast(1)→red(8°) — 명확히 고정
+  const hueEmotion = lerp(210, 8, constrain(emotion,0,1));
+  // 웹캠 색 분포(평균 색상)을 일부 반영 (직접 영상은 노출하지 않음)
+  if(inputMode==='cam' && camReady && camHasData() && frameCount % 6 === 0){ updateCamColor(); }
+  const hueFromCam = camColor.hAvg; // 0..360
+  const hueBlend = mixAngles(hueEmotion, hueFromCam, 0.25 * camColor.sAvg); // 채도 높을수록 영향↑
+  const baseHueA = hueBlend;
+  const baseHueB = (baseHueA+180)%360;
+  const sat = lerp(16, 72, emotion*0.9 + refWeight*0.2) * (0.85 + 0.3*camColor.sAvg);
+  const brt = lerp(88, 96, 1-emotion*0.6);
+
+  gfx.push(); gfx.colorMode(HSL,360,100,100,1); gfx.clear();
+
+  // draw stripes with per‑piece gradient (fixed grid)
+  const cell = 14; const cols = Math.ceil(W/cell)+2; const rows = Math.ceil(H/cell)+2; const tStep = 1;
+  let breakCount=0, totalCount=0;
+  for(let r=0;r<rows;r++){
+    const dir = (Math.floor(r/Math.max(1,Math.round(flipPeriod)))%2===0)? 1 : -1;
+    const progressCols = cols; // 전체 렌더
+    for(let c=0;c<progressCols;c++){
+      const idx = mod((c + dir*(r*tStep)), 4); const warpOnTop = (idx<2);
+      const brkSeed = noise(c*0.07, r*0.07, millis()*0.0006);
+      const doBreak = brkSeed < breakIntensity*0.6;
+      totalCount++; if(doBreak) breakCount++;
+      const jx = (randomGaussian()*jitterSigma); const jy = (randomGaussian()*jitterSigma);
+      const x = c*cell + jx; const y = r*cell + jy;
+      // 셀마다 웹캠 색에 기반한 미세 편차 부여(영상 노출 없이 분포만 반영)
+      const hueJitter = (noise(c*0.11, r*0.13, (camColor.hAvg||0)/360) - 0.5) * 20; // ±10°
+      const hBase = warpOnTop? baseHueA: baseHueB;
+      const h = (hBase + hueJitter + 360) % 360; const s = sat*(warpOnTop?1.0:0.9); const l = brt*(warpOnTop?0.95:0.86);
+
+      if(!doBreak){
+        // per‑piece gradient fill: 중심색 → 가장자리로 배경색 계열로 서서히 페이드
+        const w = warpOnTop? cell*0.9 : cell;
+        const hgt = warpOnTop? cell : cell*0.9;
+        const orient = warpOnTop? 'h' : 'v'; // 날줄/씨줄 느낌
+        gradRect(gfx, x, y, w, hgt, h, s, l, 0.92, orient);
+      }else{
+        // 깨짐: 얇은 선 + 옅은 내부 그라데이션(균열 질감)
+        gfx.noFill(); gfx.stroke(h, s*0.75, l*0.9, 0.30); gfx.strokeWeight(1); gfx.rect(x+2, y+2, cell-4, cell-4);
+        gradRect(gfx, x+3, y+3, cell-6, cell-6, h, s*0.6, l*0.95, 0.18, 'rad');
+      }
+    }
+  }
+  gfx.pop(); image(gfx, 0, 0, width, height);
+
+  // compute break ratio and drive audio
+  const breakRatio = totalCount>0 ? breakCount/totalCount : 0;
+  if(soundOn){ updateAudio(breakRatio, emotion); }
+
+  // status text
+  fill(200); textSize(12); textAlign(RIGHT,BOTTOM);
+  const status = `안정 ${(1-emotion).toFixed(2)}  •  균열 ${orderBreak.toFixed(2)}  •  참조 ${refWeight.toFixed(2)}  •  break ${(breakRatio).toFixed(2)}`;
+  text(status, width-10, height-8);
+}
+
+// gradient helpers (per‑piece)
+function gradRect(g, x, y, w, h, hue, sat, lig, alpha, mode='h'){
+  // g: p5.Graphics in HSL colorMode
+  const steps = (mode==='rad')? Math.max(6, Math.floor(Math.min(w,h)/2)) : Math.max(6, Math.floor((mode==='h'? w:h)));
+  if(mode==='h'){
+    for(let i=0;i<steps;i++){
+      const t = i/(steps-1);
+      const a = alpha * (1.0 - 0.75*t); // 가장자리에 가며 투명해짐
+      g.noStroke(); g.fill(hue, sat, lig*(0.96-0.08*t), a);
+      const xx = x + i*(w/steps);
+      g.rect(xx, y, Math.ceil(w/steps)+1, h);
+    }
+  } else if(mode==='v'){
+    for(let i=0;i<steps;i++){
+      const t = i/(steps-1);
+      const a = alpha * (1.0 - 0.75*t);
+      g.noStroke(); g.fill(hue, sat, lig*(0.96-0.08*t), a);
+      const yy = y + i*(h/steps);
+      g.rect(x, yy, w, Math.ceil(h/steps)+1);
+    }
+  } else { // radial-ish: 안쪽 밝고 바깥 어둡게
+    const cx=x+w/2, cy=y+h/2; const maxR=Math.min(w,h)/2;
+    for(let i=0;i<steps;i++){
+      const t = i/(steps-1);
+      const a = alpha * (1.0 - t);
+      g.noFill(); g.stroke(hue, sat, lig*(1.0-0.15*t), a);
+      g.rect(cx - (w/2)*(1-t), cy - (h/2)*(1-t), w*(1-t), h*(1-t));
+    }
+  }
+}
+
+function updateAudio(breakRatio, E){
+  if(shuttleVol && shuttleFilter){
+    const volDb = lerp(-36, -8, breakRatio*0.85 + E*0.35);
+    shuttleVol.volume.value = volDb;
+    shuttleFilter.frequency.value = lerp(900, 2400, breakRatio);
+  }
+  const nowMs = millis();
+  const minI = 80, maxI = 500; // 완만
+  const interval = lerp(maxI, minI, constrain(breakRatio*0.8 + E*0.25, 0, 1));
+  if(nowMs - lastClickMs > interval){ lastClickMs = nowMs; if(synthClick){ synthClick.triggerAttackRelease(0.018); } }
+}
+
+// --- Webcam color analysis (no preview)
+let camColor = { hAvg:210, sAvg:0.0, vAvg:0.0, bins:new Array(6).fill(0) };
+function updateCamColor(){
+  if(!capture || !camHasData()) return;
+  capture.loadPixels(); if(capture.pixels.length===0) return;
+  let sumH=0, sumS=0, sumV=0, n=0; const bins = new Array(6).fill(0);
+  const step = 4*4; // downsample
+  for(let i=0;i<capture.pixels.length;i+=4*step){
+    const r=capture.pixels[i]/255, g=capture.pixels[i+1]/255, b=capture.pixels[i+2]/255;
+    const hsv = rgb2hsv(r,g,b); const H=hsv[0]*360, S=hsv[1], V=hsv[2];
+    if(V<0.2 || S<0.15) continue; // 저조도/무채색 제외
+    sumH += H; sumS += S; sumV += V; n++;
+    const bin = Math.floor((((H%360)+360)%360) / 60); bins[bin]++;
+  }
+  if(n>0){ camColor.hAvg = (sumH/n+360)%360; camColor.sAvg = sumS/n; camColor.vAvg = sumV/n; camColor.bins = bins; }
+}
+function rgb2hsv(r,g,b){
+  const max = Math.max(r,g,b), min = Math.min(r,g,b); const d = max-min;
+  let h = 0; if(d!==0){
+    switch(max){ case r: h = ((g-b)/d) % 6; break; case g: h = (b-r)/d + 2; break; case b: h = (r-g)/d + 4; break; }
+    h /= 6; if(h<0) h+=1;
+  }
+  const s = max===0 ? 0 : d/max; const v = max; return [h,s,v];
+}
+function mixAngles(a,b,t){ // degrees 0..360 wrap-aware
+  const da = ((((b - a) % 360) + 540) % 360) - 180; return (a + da*t + 360) % 360;
+}
+
+function mod(a,m){let r=a%m; return r<0?r+m:r;}
+
+function senseMotionCamera(){
+  if(!capture || !camHasData()) return 0.0;
+  capture.loadPixels(); if(capture.pixels.length===0) return 0.0;
+  if(!prevFrame || prevFrame.width!==capture.width || prevFrame.pixels.length===0){
+    prevFrame = createImage(capture.width, capture.height);
+    prevFrame.copy(capture,0,0,capture.width,capture.height,0,0,prevFrame.width,prevFrame.height);
+    prevFrame.loadPixels(); return 0.0;
+  }
+  prevFrame.loadPixels(); let sum=0, cnt=0;
+  for(let i=0;i<capture.pixels.length;i+=4){
+    const d = Math.abs(capture.pixels[i]-prevFrame.pixels[i]) + Math.abs(capture.pixels[i+1]-prevFrame.pixels[i+1]) + Math.abs(capture.pixels[i+2]-prevFrame.pixels[i+2]);
+    sum += d; cnt++;
+  }
+  prevFrame.copy(capture,0,0,capture.width,capture.height,0,0,prevFrame.width,prevFrame.height);
+  prevFrame.updatePixels();
+  const avg = sum/(cnt*255*3);
+  const low=0.05, high=0.20; // 0.035/0.18 → 민감도 상향(쉽게 반응)
+  return constrain((avg-low)/(high-low), 0, 1);
+}
+</script>
+</body>
+</html>

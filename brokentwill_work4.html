@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Broken Twill — Crack Redux</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.2/p5.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+<style>
+  html,body{height:100%;margin:0;background:#0a0a0a;color:#eaeaea;font-family:ui-sans-serif,system-ui,Apple SD Gothic Neo,Segoe UI,Roboto,Pretendard,Arial}
+  header{position:fixed;inset:16px auto auto 16px;display:flex;gap:10px;z-index:10}
+  .btn{appearance:none;border:1px solid #2a2a2a;background:#141414;color:#eaeaea;padding:10px 12px;border-radius:10px;cursor:pointer}
+  .btn[disabled]{opacity:.5;cursor:not-allowed}
+  #note{position:fixed;right:16px;top:16px;color:#9aa0a6;font-size:12px}
+  main{display:grid;place-items:center;min-height:100vh}
+  canvas{box-shadow:0 0 0 1px #1e1e1e inset;border-radius:12px;background:#0c0c0c}
+</style>
+</head>
+<body>
+<header>
+  <button id="previewBtn" class="btn">Preview</button>
+</header>
+<div id="note">Crack Redux · 1080p · 30fps</div>
+<main></main>
+
+<script>
+/* ---------- Timeline / Params ---------- */
+const WIDTH=1920, HEIGHT=1080, FPS=30;
+const CYCLE_MEAN=2.5, CYCLE_JITTER=0.6; // 2~3초 안정/불안 루프
+let frameAbs=0, running=false;
+
+let cycleStart=0, cycleLen=CYCLE_MEAN, cycleIdx=0;
+function beginCycle(t0){
+  cycleStart=t0;
+  cycleLen=Math.max(1.6, CYCLE_MEAN + (Math.random()*2-1)*CYCLE_JITTER);
+  cycleIdx++;
+  seedCrackRegions();          // 주기마다 금 가는 핫스팟 재시드
+}
+function updateCycle(tNow){
+  if(tNow===0&&cycleIdx===0) beginCycle(0);
+  while(tNow>=cycleStart+cycleLen) beginCycle(cycleStart+cycleLen);
+}
+function cycleUnstable(tNow){
+  const u=(tNow-cycleStart)/cycleLen, atk=0.35, rel=0.65;
+  const e = u<atk ? Math.pow(u/atk,1.6) : (u>rel ? Math.pow((1-u)/(1-rel),0.9) : 1.0);
+  return Math.max(0,Math.min(1,e));
+}
+
+/* ---------- Audio (미니멀, 클릭 후 시작) ---------- */
+let startedAudio=false;
+async function startAudio(){
+  await Tone.start(); await Tone.getContext().resume();
+  const rev=new Tone.Reverb({decay:0.8,preDelay:0.02}).toDestination();
+  const bell=new Tone.FMSynth({modulationIndex:8,harmonicity:1.5,envelope:{attack:0.005,decay:0.2,sustain:0,release:0.12}}).connect(rev);
+  const motif=["C4","G3","A3","E3","D3","G3","B3","A3"];
+  new Tone.Sequence((time,n)=>bell.triggerAttackRelease(n,"8n",time),motif,"8n").start(0);
+  Tone.Transport.bpm.value=96; Tone.Transport.start("+0.05");
+  startedAudio=true;
+}
+
+/* ---------- Crack field ---------- */
+let crackRegions=[];
+function seedCrackRegions(){
+  crackRegions.length=0;
+  const n=Math.floor(4+Math.random()*5);
+  for(let i=0;i<n;i++){
+    crackRegions.push({
+      cx:Math.random()*WIDTH,
+      cy:Math.random()*HEIGHT,
+      r:Math.min(WIDTH,HEIGHT)*(0.10+Math.random()*0.20),
+      k:0.6+Math.random()*0.7,     // 영향 가중치
+      ang:Math.random()*Math.PI,   // 금 방향
+    });
+  }
+}
+function regionWeight(x,y){
+  let best=0;
+  for(const R of crackRegions){
+    const d=Math.hypot(x-R.cx,y-R.cy);
+    const w=(1-smoothstep(R.r*0.55,R.r,d))*R.k;
+    if(w>best) best=w;
+  }
+  return best;
+}
+function smoothstep(e0,e1,x){
+  const t=Math.min(1,Math.max(0,(x-e0)/(e1-e0))); return t*t*(3-2*t);
+}
+
+/* ---------- p5 setup/draw ---------- */
+let gfx, BG={phase:0,rot:0};
+const BG_CFG={sMin:0.02,sMax:0.08,rMin:0.002,rMax:0.02,baseS:1.15,baseR:0.25};
+function setup(){
+  frameRate(FPS);
+  const cnv=createCanvas(WIDTH,HEIGHT);
+  cnv.parent(document.querySelector('main'));
+  gfx=createGraphics(WIDTH,HEIGHT);
+  noSmooth();
+
+  // Preview 버튼 클릭 시 오디오/애니메이션 시작
+  const previewBtn = document.getElementById('previewBtn');
+  previewBtn.addEventListener('click', () => {
+    if (!running) {
+      startAudio();           // 사용자 제스처 이후 오디오 허용
+      running = true;
+      previewBtn.textContent = 'Running...';
+      previewBtn.disabled = true;
+    }
+  });
+}
+
+function draw(){
+  if(!running) return;
+  const t=frameAbs/FPS; updateCycle(t);
+  const unstable = cycleUnstable(t);
+
+  // 깨짐 강도: 안정→불안 구간에서 상승, 금 핫스팟 가중
+  const baseBreak = unstable;
+  renderBrokenTwill(gfx, baseBreak);
+
+  // 백그라운드 약한 스케일/로테이션로 긴장감
+  const sAmp=lerp(BG_CFG.sMin,BG_CFG.sMax,baseBreak);
+  const rAmp=lerp(BG_CFG.rMin,BG_CFG.rMax,baseBreak);
+  BG.phase += 0.06*(BG_CFG.baseS + (noise(t*0.2)*2-1)*0.6);
+  BG.rot   += 0.02*(BG_CFG.baseR + (noise(t*0.2+10)*2-1)*0.6);
+  const sc=1.0 + sAmp*Math.sin(BG.phase);
+  const rot=rAmp*Math.sin(BG.rot);
+
+  push(); translate(WIDTH/2,HEIGHT/2); rotate(rot); scale(sc,sc);
+  imageMode(CENTER); image(gfx,0,0,WIDTH,HEIGHT); imageMode(CORNER); pop();
+
+  frameAbs++;
+}
+
+/* ---------- Twill + Crack renderer ---------- */
+function renderBrokenTwill(g, breakBase){
+  g.push(); g.clear(); g.colorMode(HSB,360,100,100,1);
+
+  // 기본 격자
+  const cellBase=18;
+  const cell=cellBase*(1.0+0.25*breakBase);
+  const cols=Math.ceil(WIDTH/cell)+2, rows=Math.ceil(HEIGHT/cell)+2;
+
+  const hue0=lerp(210,18,0.1+0.7*breakBase);
+  const sat0=lerp(22,58,Math.min(1,(0.1+0.7*breakBase)*0.8));
+  const bri0=88+10*breakBase;
+
+  for(let r=0;r<rows;r++){
+    const flipPeriod=Math.max(1,Math.round(8*(0.2+0.6*(1-breakBase))));
+    const dir=(r%flipPeriod)<1?1:-1;
+    for(let c=0;c<cols;c++){
+      const x=c*cell, y=r*cell, warpTop=((c+dir*r)%2)===0;
+
+      // 색/광택
+      const H=(hue0 + (noise(c*0.11,r*0.13)-0.5)*18 + 360)%360;
+      const S=sat0*(warpTop?1:0.9), B=bri0*(warpTop?1:0.92);
+
+      // 이 타일의 ‘깨짐’ 확률 (베이스 + 핫스팟 가중)
+      const centerX=x+cell*0.5, centerY=y+cell*0.5;
+      const hot=regionWeight(centerX,centerY);               // 0..~1
+      const crackProb = Math.min(1, 0.15 + 0.45*breakBase + 0.55*hot);
+
+      // 노이즈 시드로 분기
+      const n = noise(c*0.07,r*0.07,frameAbs*0.01);
+      const cracked = n < crackProb;
+
+      if(!cracked){
+        // 정상 타일: 직조 그라디언트 사각형
+        const w=warpTop?cell*0.92:cell, h=warpTop?cell:cell*0.92;
+        gradRect(g,x,y,w,h,Math.min(w,h)*0.18,H,S,B,0.92,warpTop?'h':'v');
+      }else{
+        // 깨진 타일: 두 조각으로 갈라 + 틈/하이라이트 + 헤어라인 크랙
+        drawCrackedTile(g,x,y,cell,H,S,B,breakBase,centerX,centerY);
+      }
+    }
+  }
+
+  // 불안정 시 전체적인 미세 ‘글리치’로 파열감 강화
+  if(breakBase>0.55 && (frameAbs%22)<2){
+    g.copy(g,0,0,WIDTH,HEIGHT,random(-8,8),random(-8,8),WIDTH,HEIGHT);
+  }
+  g.pop();
+}
+
+function drawCrackedTile(g,x,y,cell,H,S,B,breakBase,cx,cy){
+  const ctx=g.drawingContext;
+
+  // 균열 각도와 오프셋(틈)
+  const ang = noise(x*0.02,y*0.02,frameAbs*0.003)*Math.PI*2;
+  const gap = 1 + 3*breakBase;        // 틈 너비
+  const jitter = 0.5 + 1.5*breakBase;
+
+  // 타일 네 모서리
+  const p0=[x,y], p1=[x+cell,y], p2=[x+cell,y+cell], p3=[x,y+cell];
+
+  // 두 조각을 반대 방향으로 약간 이동
+  const offAx = -gap + random(-jitter,jitter);
+  const offAy = -gap + random(-jitter,jitter);
+  const offBx =  gap + random(-jitter,jitter);
+  const offBy =  gap + random(-jitter,jitter);
+
+  // 조각 채우기 (미묘한 명암차)
+  const fillA = hsb(H,S,B*0.92,0.95);
+  const fillB = hsb(H,S,B*0.86,0.95);
+
+  ctx.save();
+  ctx.beginPath(); ctx.moveTo(p0[0]+offAx,p0[1]+offAy); ctx.lineTo(p1[0]+offAx,p1[1]+offAy);
+  ctx.lineTo(p2[0]+offAx,p2[1]+offAy); ctx.lineTo(p3[0]+offAx,p3[1]+offAy); ctx.closePath();
+  ctx.fillStyle=fillA; ctx.fill();
+
+  ctx.beginPath(); ctx.moveTo(p0[0]+offBx,p0[1]+offBy); ctx.lineTo(p1[0]+offBx,p1[1]+offBy);
+  ctx.lineTo(p2[0]+offBx,p2[1]+offBy); ctx.lineTo(p3[0]+offBx,p3[1]+offBy); ctx.closePath();
+  ctx.fillStyle=fillB; ctx.fill();
+
+  // 중앙 절단선 하이라이트/섀도우
+  const midx=x+cell*0.5, midy=y+cell*0.5;
+  const nx=Math.cos(ang), ny=Math.sin(ang);
+  ctx.strokeStyle="rgba(255,255,255,0.12)"; ctx.lineWidth=1.2;
+  ctx.beginPath(); ctx.moveTo(midx-1000*nx, midy-1000*ny); ctx.lineTo(midx+1000*nx, midy+1000*ny); ctx.stroke();
+  ctx.strokeStyle="rgba(0,0,0,0.35)"; ctx.lineWidth=2;
+  const gx = midx + (-ny)*gap*0.5, gy = midy + (nx)*gap*0.5;
+  ctx.beginPath(); ctx.moveTo(gx-1000*nx, gy-1000*ny); ctx.lineTo(gx+1000*nx, gy+1000*ny); ctx.stroke();
+
+  // 헤어라인 갈래
+  const branches = 2 + Math.floor(3*breakBase);
+  ctx.strokeStyle="rgba(255,255,255,0.18)"; ctx.lineWidth=0.8;
+  for(let i=0;i<branches;i++){
+    const a = ang + (random(-0.6,0.6));
+    const len = 4 + 10*breakBase + random(0,6);
+    const bx = midx + random(-cell*0.2,cell*0.2);
+    const by = midy + random(-cell*0.2,cell*0.2);
+    ctx.beginPath(); ctx.moveTo(bx,by);
+    ctx.lineTo(bx+Math.cos(a)*len, by+Math.sin(a)*len); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ---------- util ---------- */
+function hsb(h,s,b,a){
+  s/=100; b/=100;
+  const C=b*s, hh=(h/60)%6, X=C*(1-Math.abs(hh%2-1));
+  let r=0,g=0,bl=0;
+  if(0<=hh&&hh<1){r=C; g=X;}
+  else if(1<=hh&&hh<2){r=X; g=C;}
+  else if(2<=hh&&hh<3){g=C; bl=X;}
+  else if(3<=hh&&hh<4){g=X; bl=C;}
+  else if(4<=hh&&hh<5){r=X; bl=C;}
+  else { r=C; bl=X; }
+  const m=b-C;
+  r=Math.round((r+m)*255); g=Math.round((g+m)*255); bl=Math.round((bl+m)*255);
+  return `rgba(${r},${g},${bl},${a})`;
+}
+function gradRect(g,x,y,w,h,r,H,S,B,A,mode){
+  const ctx=g.drawingContext;
+  const gx0=x, gy0=y, gx1=(mode==='h')?x+w:x, gy1=(mode==='h')?y:y+h;
+  const c0=hsb(H,S,B,A), c1=hsb(H,S,B*0.88,A*0.25);
+  const grad=ctx.createLinearGradient(gx0,gy0,gx1,gy1); grad.addColorStop(0,c0); grad.addColorStop(1,c1);
+  ctx.save(); ctx.beginPath();
+  if(typeof ctx.roundRect==='function') ctx.roundRect(x,y,w,h,r);
+  else { const rr=Math.min(r,Math.min(w,h)/2);
+    ctx.moveTo(x+rr,y); ctx.lineTo(x+w-rr,y); ctx.arc(x+w-rr,y+rr,rr,-Math.PI/2,0);
+    ctx.lineTo(x+w,y+h-rr); ctx.arc(x+w-rr,y+h-rr,rr,0,Math.PI/2);
+    ctx.lineTo(x+rr,y+h); ctx.arc(x+rr,y+h-rr,rr,Math.PI/2,Math.PI);
+    ctx.lineTo(x,y+rr); ctx.arc(x+rr,y+rr,rr,Math.PI,1.5*Math.PI);
+  }
+  ctx.fillStyle=grad; ctx.fill(); ctx.restore();
+}
+function lerp(a,b,t){return a+(b-a)*t;}
+function random(a,b){return a + Math.random()*(b-a);}
+</script>
+</body>
+</html>

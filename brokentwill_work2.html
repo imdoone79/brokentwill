@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Broken Twill — Damped String (Audible Failsafe, final)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.2/p5.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+<style>
+  html,body{height:100%;margin:0;background:#0a0a0a;color:#eaeaea;font-family:ui-sans-serif,system-ui,Apple SD Gothic Neo,Segoe UI,Roboto,Pretendard,Arial,sans-serif}
+  header{position:fixed;inset:16px auto auto 16px;display:flex;gap:10px;z-index:10}
+  .btn{appearance:none;border:1px solid #2a2a2a;background:#141414;color:#eaeaea;padding:10px 12px;border-radius:10px;cursor:pointer}
+  .btn[disabled]{opacity:.5;cursor:not-allowed}
+  #ui{position:fixed;right:16px;top:16px;display:flex;flex-direction:column;gap:8px;align-items:flex-end;z-index:15}
+  .pill{display:flex;gap:8px;align-items:center;background:#141414;border:1px solid #2a2a2a;padding:8px 10px;border-radius:12px}
+  #vu{width:220px;height:10px;background:#222;border-radius:6px;overflow:hidden}
+  #bar{height:100%;width:0%;background:#8ae66e}
+  main{display:grid;place-items:center;min-height:100vh}
+  canvas{box-shadow:0 0 0 1px #1e1e1e inset;border-radius:12px;background:#0c0c0c}
+</style></head>
+<body>
+<header>
+  <button id="previewBtn" class="btn">Preview (sound first)</button>
+  <button id="recordBtn"  class="btn" disabled>Record 5 min (WebM)</button>
+</header>
+
+<div id="ui">
+  <div class="pill">
+    <label>Master Gain (dB)</label>
+    <input id="gain" type="range" min="-24" max="+24" step="1" value="0">
+    <span id="gainv">0</span>
+  </div>
+  <div class="pill">
+    <button id="test440" class="btn">Test 440 Hz</button>
+    <button id="test1k" class="btn">Test 1 kHz</button>
+  </div>
+  <div class="pill">
+    <label><input id="failsafe" type="checkbox" checked> Failsafe Tone</label>
+  </div>
+  <div class="pill" style="gap:12px">
+    <div>VU</div>
+    <div id="vu"><div id="bar"></div></div>
+    <div id="vudb" style="min-width:54px;text-align:right;color:#9aa0a6">–∞ dB</div>
+  </div>
+</div>
+
+<main></main>
+
+<script>
+/* ===== 비주얼 ===== */
+const WIDTH=1920, HEIGHT=1080, FPS=30, DURATION_SEC=300;
+const CYCLE_MEAN=2.5, CYCLE_JITTER=0.6;
+let gfx, frameAbs=0, totalFrames=DURATION_SEC*FPS, running=false;
+let cycleStart=0, cycleLen=CYCLE_MEAN, cycleIdx=0;
+let canvasElement, mediaRecorder, recordedChunks=[];
+
+// --- BG transform (scale/rotate) ---
+const BG={phase:0, rotPhase:0, seedS:Math.random()*1000, seedR:Math.random()*1000};
+const BG_CFG={baseSpeed:1.0,jitter:0.7,baseRot:0.22,jitterRot:0.6,ampMin:0.02,ampMax:0.08,rotMin:0.002,rotMax:0.020};
+
+function setup(){frameRate(FPS);const cnv=createCanvas(WIDTH,HEIGHT);canvasElement=cnv.canvas;cnv.parent(document.querySelector('main'));gfx=createGraphics(WIDTH,HEIGHT);noSmooth();}
+function draw(){
+  if(!running)return;
+  const t=frameAbs/FPS;updateCycle(t);
+  const unstable=cycleUnstableAmount(t);
+  const breakIntensity=unstable;
+  const order=0.2+0.6*(1-breakIntensity),warm=0.1+0.7*unstable,jitter=0.02+0.22*breakIntensity;
+  renderBrokenTwill(gfx,{order,warm,jitter,breakIntensity,unstable});
+  // BG transform
+  const tsec=frameAbs/FPS;const spd=(BG_CFG.baseSpeed+BG_CFG.jitter*((noise(BG.seedS+tsec*0.2)*2)-1))*0.06;
+  const rotSp=(BG_CFG.baseRot+BG_CFG.jitterRot*((noise(BG.seedR+tsec*0.2)*2)-1))*0.02;BG.phase+=spd;BG.rotPhase+=rotSp;
+  const ampS=lerp(BG_CFG.ampMin,BG_CFG.ampMax,breakIntensity),ampR=lerp(BG_CFG.rotMin,BG_CFG.rotMax,breakIntensity);
+  const bgScale=1.0+ampS*Math.sin(BG.phase),bgRot=ampR*Math.sin(BG.rotPhase);
+  push();translate(WIDTH*0.5,HEIGHT*0.5);rotate(bgRot);scale(bgScale,bgScale);imageMode(CENTER);image(gfx,0,0,WIDTH,HEIGHT);imageMode(CORNER);pop();
+  if(t>=(DURATION_SEC-2)){const u=(t-(DURATION_SEC-2))/2;noStroke();fill(0,255*Math.min(1,u));rect(0,0,WIDTH,HEIGHT);}
+  frameAbs++;if(frameAbs>=totalFrames){running=false;stopRecording();noLoop();}
+}
+function renderBrokenTwill(g,P){
+  const {order,warm,jitter,breakIntensity,unstable}=P;
+  g.push();g.clear();g.colorMode(HSB,360,100,100,1);
+  const cellBase=16,cell=cellBase*(1.0+0.35*breakIntensity);
+  const cols=Math.ceil(WIDTH/cell)+2,rows=Math.ceil(HEIGHT/cell)+2;
+  const hueBase=lerp(210,18,warm),satBase=lerp(20,60,Math.min(1,warm*0.75)),briBase=88+8*warm;
+  for(let r=0;r<rows;r++){
+    const flipPeriod=Math.max(1,Math.round(8*order));const dir=(r%flipPeriod)<1?1:-1;
+    for(let c=0;c<cols;c++){
+      const jx=randomGaussian()*jitter*8,jy=randomGaussian()*jitter*8;
+      const x=c*cell+jx,y=r*cell+jy,warpTop=((c+dir*r)%2)===0;
+      const hueJ=(noise(c*0.11,r*0.13)-0.5)*20,H=(hueBase+hueJ+360)%360,S=satBase*(warpTop?1:0.9),B=briBase*(warpTop?1:0.92);
+      const w=warpTop?cell*0.92:cell,h=warpTop?cell:cell*0.92;
+      gradRect(g,x,y,w,h,Math.min(w,h)*0.22,H,S,B,0.92,warpTop?'h':'v');
+    }
+  } g.pop();
+}
+function gradRect(g,x,y,w,h,r,H,S,B,A,mode){
+  const ctx=g.drawingContext,gx0=x,gy0=y,gx1=(mode==='h')?x+w:x,gy1=(mode==='h')?y:y+h;
+  const c0=hsbToRgba(H,S,B,A),c1=hsbToRgba(H,S,B*0.88,A*0.25);
+  const grad=ctx.createLinearGradient(gx0,gy0,gx1,gy1);grad.addColorStop(0,c0);grad.addColorStop(1,c1);
+  ctx.save();ctx.beginPath();if(typeof ctx.roundRect==='function')ctx.roundRect(x,y,w,h,r);else{
+    const rr=Math.min(r,Math.min(w,h)/2);
+    ctx.moveTo(x+rr,y);ctx.lineTo(x+w-rr,y);ctx.arc(x+w-rr,y+rr,rr,-Math.PI/2,0);
+    ctx.lineTo(x+w,y+h-rr);ctx.arc(x+w-rr,y+h-rr,rr,0,Math.PI/2);
+    ctx.lineTo(x+rr,y+h);ctx.arc(x+rr,y+h-rr,rr,Math.PI/2,Math.PI);
+    ctx.lineTo(x,y+rr);ctx.arc(x+rr,y+rr,rr,Math.PI,1.5*Math.PI);
+  } ctx.fillStyle=grad;ctx.fill();ctx.restore();
+}
+function hsbToRgba(h,s,b,a){s/=100;b/=100;const C=b*s,hh=(h/60)%6,X=C*(1-Math.abs(hh%2-1));let r=0,g=0,bl=0;
+  if(0<=hh&&hh<1){r=C;g=X;}else if(1<=hh&&hh<2){r=X;g=C;}else if(2<=hh&&hh<3){g=C;bl=X;}
+  else if(3<=hh&&hh<4){g=X;bl=C;}else if(4<=hh&&hh<5){r=X;bl=C;}else{r=C;bl=X;}
+  const m=b-C;r=Math.round((r+m)*255);g=Math.round((g+m)*255);bl=Math.round((bl+m)*255);return `rgba(${r},${g},${bl},${a})`;
+}
+function beginCycle(t0){cycleStart=t0;cycleLen=Math.max(1.6,CYCLE_MEAN+(Math.random()*2-1)*CYCLE_JITTER);cycleIdx++;}
+function updateCycle(tNow){if(tNow===0&&cycleIdx===0)beginCycle(0);while(tNow>=cycleStart+cycleLen)beginCycle(cycleStart+cycleLen);}
+function cycleUnstableAmount(tNow){const u=(tNow-cycleStart)/cycleLen,atk=0.35,rel=0.65;const e=u<atk?Math.pow(u/atk,1.6):(u>rel?Math.pow((1-u)/(1-rel),0.9):1.0);return Math.max(0,Math.min(1,e));}
+function randomGaussian(){let u=0,v=0;while(u===0)u=Math.random();while(v===0)v=Math.random();return Math.sqrt(-2.0*Math.log(u))*Math.cos(2.0*Math.PI*v);}
+
+/* ===== 오디오(가청 보조 포함) ===== */
+let master=null, masterVol=null, meter=null, meterInterval=null;
+let pl=null, motifLoop=null, fsOsc=null, fsGain=null;
+
+async function setupAudio(){
+  await Tone.start();await Tone.getContext().resume();
+  masterVol=new Tone.Volume(0);master=new Tone.Gain(1).connect(masterVol).toDestination();
+  meter=new Tone.Meter({channels:1,smoothing:0.7});master.connect(meter);startMeterUI();
+  pl=new Tone.PluckSynth({attackNoise:1.4,dampening:3200,resonance:0.98}).connect(master);
+  const motif=["C4","G3","A3","E3","D3","G3","B3","A3"];let i=0;
+  motifLoop=new Tone.Loop((time)=>{pl.triggerAttack(motif[i%motif.length],time,0.95);i++;},"8n").start(0);
+  fsGain=new Tone.Gain(Tone.dbToGain(-24)).connect(master);fsOsc=new Tone.Oscillator(660,"sine").connect(fsGain);
+  if(document.getElementById('failsafe').checked)fsOsc.start();
+  const ping=new Tone.Oscillator(880,"sine").toDestination();
+  const pingEnv=new Tone.AmplitudeEnvelope({attack:0.005,decay:0.08,sustain:0,release:0.04}).connect(master);
+  ping.connect(pingEnv);ping.start("+0.05");ping.stop("+0.25");pingEnv.triggerAttackRelease("16n","+0.05");
+  Tone.Transport.bpm.value=96;Tone.Transport.start("+0.03");
+}
+function teardownAudio(){try{Tone.Transport.stop();Tone.Transport.cancel(0);
+  motifLoop?.dispose();pl?.dispose();fsOsc?.stop();fsOsc?.dispose();fsGain?.dispose();
+  meter?.dispose();master?.dispose();masterVol?.dispose();}catch(e){}stopMeterUI();}
+
+function startRecording(){const canvasStream=canvasElement.captureStream(FPS);
+  const dest=Tone.getContext().rawContext.createMediaStreamDestination();masterVol.connect(dest);
+  const combined=new MediaStream([...canvasStream.getVideoTracks(),...dest.stream.getAudioTracks()]);
+  recordedChunks=[];let mr;try{mr=new MediaRecorder(combined,{mimeType:"video/webm;codecs=vp9,opus"});}catch(e){mr=new MediaRecorder(combined);}
+  mediaRecorder=mr;mediaRecorder.ondataavailable=(e)=>{if(e.data.size>0)recordedChunks.push(e.data);};
+  mediaRecorder.onstop=()=>{const blob=new Blob(recordedChunks,{type:"video/webm"});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download="broken_twill_5min_string_failsafe_final.webm";document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},800);};
+  mediaRecorder.start();}
+function stopRecording(){if(mediaRecorder&&mediaRecorder.state!=="inactive"){mediaRecorder.stop();}}
+
+/* ===== VU UI ===== */
+function startMeterUI(){const bar=document.getElementById('bar');const vudb=document.getElementById('vudb');
+  stopMeterUI();meterInterval=setInterval(()=>{if(!meter)return;const db=meter.getValue();const n=Math.max(-60,Math.min(0,db));
+    const pct=((n+60)/60)*100;bar.style.width=pct.toFixed(1)+"%";vudb.textContent=(db===-Infinity?"–∞":db.toFixed(1))+" dB";},60);}
+function stopMeterUI(){if(meterInterval){clearInterval(meterInterval);meterInterval=null;}}
+
+/* ===== UI ===== */
+const previewBtn=document.getElementById('previewBtn');const recordBtn=document.getElementById('recordBtn');
+const gain=document.getElementById('gain');const gainv=document.getElementById('gainv');const failsafe=document.getElementById('failsafe');
+const test440=document.getElementById('test440');const test1k=document.getElementById('test1k');
+previewBtn.onclick=async()=>{if(running)return;await setupAudio();running=true;loop();recordBtn.disabled=false;};
+recordBtn.onclick=()=>{recordBtn.disabled=true;startRecording();setTimeout(()=> stopRecording(), DURATION_SEC*1000);};
+gain.oninput=()=>{gainv.textContent=gain.value;if(masterVol)masterVol.volume.value=+gain.value;};
+failsafe.onchange=()=>{if(!fsOsc)return;if(failsafe.checked)fsOsc.start();else fsOsc.stop();};
+function quickBeep(freq){const osc=new Tone.Oscillator(freq,"sine");const env=new Tone.AmplitudeEnvelope({attack:0.005,decay:0.08,sustain:0,release:0.05});osc.connect(env).connect(master);osc.start();env.triggerAttackRelease("16n");osc.stop("+0.2");}
+test440.onclick=()=>quickBeep(440);test1k.onclick=()=>quickBeep(1000);
+
+/* ===== 유틸 ===== */
+function beginCycle(t0){cycleStart=t0;cycleLen=Math.max(1.6,CYCLE_MEAN+(Math.random()*2-1)*CYCLE_JITTER);cycleIdx++;}
+function updateCycle(tNow){if(tNow===0&&cycleIdx===0)beginCycle(0);while(tNow>=cycleStart+cycleLen)beginCycle(cycleStart+cycleLen);}
+function cycleUnstableAmount(tNow){const u=(tNow-cycleStart)/cycleLen,atk=0.35,rel=0.65;const e=u<atk?Math.pow(u/atk,1.6):(u>rel?Math.pow((1-u)/(1-rel),0.9):1.0);return Math.max(0,Math.min(1,e));}
+function randomGaussian(){let u=0,v=0;while(u===0)u=Math.random();while(v===0)v=Math.random();return Math.sqrt(-2.0*Math.log(u))*Math.cos(2.0*Math.PI*v);}
+function hsbToRgba(h,s,b,a){s/=100;b/=100;const C=b*s,hh=(h/60)%6,X=C*(1-Math.abs(hh%2-1));let r=0,g=0,bl=0;
+  if(0<=hh&&hh<1){r=C;g=X;}else if(1<=hh&&hh<2){r=X;g=C;}else if(2<=hh&&hh<3){g=C;bl=X;}
+  else if(3<=hh&&hh<4){g=X;bl=C;}else if(4<=hh&&hh<5){r=X;bl=C;}else{r=C;bl=X;}
+  const m=b-C;r=Math.round((r+m)*255);g=Math.round((g+m)*255);bl=Math.round((bl+m)*255);return `rgba(${r},${g},${bl},${a})`;}
+function gradRect(g,x,y,w,h,r,H,S,B,A,mode){const ctx=g.drawingContext,gx0=x,gy0=y,gx1=(mode==='h')?x+w:x,gy1=(mode==='h')?y:y+h;
+  const c0=hsbToRgba(H,S,B,A),c1=hsbToRgba(H,S,B*0.88,A*0.25);const grad=ctx.createLinearGradient(gx0,gy0,gx1,gy1);grad.addColorStop(0,c0);grad.addColorStop(1,c1);
+  ctx.save();ctx.beginPath();if(typeof ctx.roundRect==='function')ctx.roundRect(x,y,w,h,r);else{const rr=Math.min(r,Math.min(w,h)/2);
+  ctx.moveTo(x+rr,y);ctx.lineTo(x+w-rr,y);ctx.arc(x+w-rr,y+rr,rr,-Math.PI/2,0);ctx.lineTo(x+w,y+h-rr);ctx.arc(x+w-rr,y+h-rr,rr,0,Math.PI/2);
+  ctx.lineTo(x+rr,y+h);ctx.arc(x+rr,y+h-rr,rr,Math.PI/2,Math.PI);ctx.lineTo(x,y+rr);ctx.arc(x+rr,y+rr,rr,Math.PI,1.5*Math.PI);}ctx.fillStyle=grad;ctx.fill();ctx.restore();}
+</script>
+</body></html>
